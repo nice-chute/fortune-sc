@@ -183,26 +183,26 @@ describe('fortune', () => {
   });
 
   it('Initialize program', async () => {
-    const tx = await program.rpc.initialize(
-      swapFee,
-      burnCost,
-      feeScalar,
-      splMin,
-      splMax,
-      ptokenMax,
-      ptokenMin,
-      {
-        accounts: {
-          signer: fortuneAuth.publicKey,
-          splVault: fortuneVault,
-          splMint: NATIVE_MINT,
-          state: state,
-          systemProgram: SystemProgram.programId,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          rent: SYSVAR_RENT_PUBKEY
-        },
-        signers: [fortuneAuth]
-      });
+    // const tx = await program.rpc.initialize(
+    //   swapFee,
+    //   burnCost,
+    //   feeScalar,
+    //   splMin,
+    //   splMax,
+    //   ptokenMax,
+    //   ptokenMin,
+    //   {
+    //     accounts: {
+    //       signer: fortuneAuth.publicKey,
+    //       splVault: fortuneVault,
+    //       splMint: NATIVE_MINT,
+    //       state: state,
+    //       systemProgram: SystemProgram.programId,
+    //       tokenProgram: TOKEN_PROGRAM_ID,
+    //       rent: SYSVAR_RENT_PUBKEY
+    //     },
+    //     signers: [fortuneAuth]
+    //   });
   });
 
   it('Create pool', async () => {
@@ -216,7 +216,7 @@ describe('fortune', () => {
           probPool: probPool.publicKey,
           ptokenMint: ptokenMint,
           nftVault: nftVault,
-          splVault: splVault,
+          lamportVault: splVault,
           ptokenVault: ptokenVault,
           nftMint: nftMint.publicKey,
           nativeMint: NATIVE_MINT,
@@ -231,12 +231,12 @@ describe('fortune', () => {
     let _pool = await program.account.probPool.fetch(probPool.publicKey)
     assert.ok(_pool.authority.equals(creatorAuth.publicKey))
     assert.ok(_pool.nftAuthority.equals(creatorAuth.publicKey))
-    assert.ok(_pool.splVault.equals(splVault))
+    assert.ok(_pool.lamportVault.equals(splVault))
     assert.ok(_pool.ptokenVault.equals(ptokenVault))
     assert.ok(_pool.ptokenMint.equals(ptokenMint))
     assert.ok(_pool.nftMint.equals(nftMint.publicKey))
     assert.ok(_pool.claimed == false)
-    assert.ok(_pool.splSupply.eq(splAmount))
+    assert.ok(_pool.lamportSupply.eq(splAmount))
     assert.ok(_pool.ptokenSupply.eq(ptokenAmount))
     assert.ok(_pool.outstandingPtokens.toNumber() == 0)
   });
@@ -247,11 +247,11 @@ describe('fortune', () => {
       {
         accounts: {
           signer: buyerAuth.publicKey,
-          poolSpl: splVault,
-          poolPtoken: ptokenVault,
+          poolLamportVault: splVault,
+          poolPtokenVault: ptokenVault,
           probPool: probPool.publicKey,
-          fortuneSpl: fortuneVault,
-          userPtoken: userPtokenVault,
+          fortuneLamportVault: fortuneVault,
+          userPtokenVault: userPtokenVault,
           ptokenMint: ptokenMint,
           nativeMint: NATIVE_MINT,
           state: state,
@@ -286,10 +286,13 @@ describe('fortune', () => {
       {
         accounts: {
           signer: buyerAuth.publicKey,
+          fortuneLamportVault: fortuneVault,
           userPtokenVault: userPtokenVault,
           userBurn: userBurn,
           probPool: probPool.publicKey,
           ptokenMint: ptokenMint,
+          state: state,
+          nativeMint: NATIVE_MINT,
           systemProgram: SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
           rent: SYSVAR_RENT_PUBKEY
@@ -330,14 +333,14 @@ describe('fortune', () => {
       burnAmount,
       {
         accounts: {
-          carolineAuthority: fortuneAuth.publicKey,
+          fortuneAuthority: fortuneAuth.publicKey,
           user: buyerAuth.publicKey,
           nftVault: nftVault,
           userBurn: userBurn,
           probPool: probPool.publicKey,
           nftMint: nftMint.publicKey,
           ptokenMint: ptokenMint,
-          recentBlockhashes: SYSVAR_RECENT_BLOCKHASHES_PUBKEY,
+          state: state,
           systemProgram: SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
           rent: SYSVAR_RENT_PUBKEY
@@ -368,13 +371,13 @@ describe('fortune', () => {
       {
         accounts: {
           signer: creatorAuth.publicKey,
-          splAccount: creatorSplAccount.publicKey,
+          recipient: creatorSplAccount.publicKey,
           nftAccount: creatorNftAccount.publicKey,
           probPool: probPool.publicKey,
           ptokenMint: ptokenMint,
           nftVault: nftVault,
-          splVault: splVault,
-          ptokenVault: ptokenVault,
+          poolLamportVault: splVault,
+          poolPtokenVault: ptokenVault,
           nftMint: nftMint.publicKey,
           nativeMint: NATIVE_MINT,
           systemProgram: SystemProgram.programId,
