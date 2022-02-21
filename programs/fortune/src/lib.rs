@@ -13,21 +13,53 @@ mod random;
 #[program]
 pub mod fortune {
     use super::*;
-    const BURN_COST: u64 = 10000;
-    const FEE_SCALAR: u64 = 1000;
 
     // Create program vaults
-    pub fn initialize(ctx: Context<Initialize>) -> ProgramResult {
+    pub fn initialize(
+        ctx: Context<Initialize>,
+        swap_fee: u64,
+        burn_cost: u64,
+        fee_scalar: u64,
+        lamport_min: u64,
+        lamport_max: u64,
+        ptoken_max: u64,
+        ptoken_min: u64,
+    ) -> ProgramResult {
+        // Set state
+        let state = &mut ctx.accounts.state;
+        state.burn_cost = burn_cost;
+        state.fee_scalar = fee_scalar;
+        state.authority = ctx.accounts.signer.key();
+        state.swap_fee = swap_fee;
+        state.lamport_init_min = lamport_min;
+        state.lamport_init_max = lamport_max;
+        state.ptoken_init_max = ptoken_max;
+        state.ptoken_init_min = ptoken_min;
         Ok(())
     }
 
     // Create probability pool and its vaults
     pub fn create_pool(
         ctx: Context<CreatePool>,
-        swap_fee: u64,
         spl_amount: u64,
         ptoken_amount: u64,
     ) -> ProgramResult {
+        require!(
+            spl_amount >= ctx.accounts.state.lamport_init_min,
+            error::FortuneError::LamportInitMin
+        );
+        require!(
+            spl_amount < ctx.accounts.state.lamport_init_max,
+            error::FortuneError::LamportInitMax
+        );
+        require!(
+            ptoken_amount < ctx.accounts.state.ptoken_init_max,
+            error::FortuneError::PtokenInitMax
+        );
+        require!(
+            ptoken_amount >= ctx.accounts.state.ptoken_init_min,
+            error::FortuneError::PtokenInitMin
+        );
         // Set pool data
         ctx.accounts.prob_pool.authority = ctx.accounts.signer.key();
         ctx.accounts.prob_pool.nft_authority = ctx.accounts.signer.key();
@@ -38,7 +70,6 @@ pub mod fortune {
         ctx.accounts.prob_pool.ptoken_mint = ctx.accounts.ptoken_mint.key();
         ctx.accounts.prob_pool.nft_mint = ctx.accounts.nft_mint.key();
         // Set pool params
-        ctx.accounts.prob_pool.swap_fee = swap_fee;
         ctx.accounts.prob_pool.claimed = false;
         ctx.accounts.prob_pool.ptoken_supply = ptoken_amount;
         ctx.accounts.prob_pool.spl_supply = spl_amount;
@@ -87,27 +118,32 @@ pub mod fortune {
             ctx.accounts.prob_pool.claimed == false,
             error::FortuneError::PoolClosed
         );
+        msg!("swap_fee: {:?}", ctx.accounts.state.swap_fee);
+        msg!("scalar: {:?}", ctx.accounts.state.fee_scalar);
         // Calculate new AMM token supply, costs, and fees
         let k = ctx.accounts.prob_pool.ptoken_supply * ctx.accounts.prob_pool.spl_supply;
+        msg!("k: {:?}", k);
         let new_ptoken_supply = ctx.accounts.prob_pool.ptoken_supply - ptoken_amount;
+        msg!("new_ptoken_suppl: {:?}", new_ptoken_supply);
         let new_spl_supply = k / new_ptoken_supply;
+        msg!("new_spl_supply: {:?}", new_spl_supply);
         let spl_cost = new_spl_supply - ctx.accounts.prob_pool.spl_supply;
-        let spl_fee = (spl_cost * ctx.accounts.prob_pool.swap_fee) / FEE_SCALAR;
-
-        let ptoken_vault_bump = *ctx.bumps.get("ptoken_vault").unwrap();
-
+        let spl_fee = (spl_cost * ctx.accounts.state.swap_fee) / ctx.accounts.state.fee_scalar;
         msg!("fee: {:?}", spl_fee);
+        msg!("cost: {:?}", spl_cost);
 
-        // Transfer spl cost to prob pool vault
+        let pool_token_bump = *ctx.bumps.get("pool_ptoken").unwrap();
+
+        // Transfer spl cost to pool vault
         invoke_signed(
             &system_instruction::transfer(
                 &ctx.accounts.signer.key(),
-                &ctx.accounts.spl_vault.key(),
+                &ctx.accounts.pool_spl.key(),
                 spl_cost,
             ),
             &[
                 ctx.accounts.signer.to_account_info(),
-                ctx.accounts.spl_vault.to_account_info(),
+                ctx.accounts.pool_spl.to_account_info(),
                 ctx.accounts.system_program.to_account_info(),
             ],
             &[],
@@ -115,26 +151,26 @@ pub mod fortune {
         // Sync native
         let ix_1 = sync_native(
             &ctx.accounts.token_program.key(),
-            &ctx.accounts.spl_vault.key(),
+            &ctx.accounts.pool_spl.key(),
         )?;
         invoke_signed(
             &ix_1,
             &[
                 ctx.accounts.token_program.to_account_info(),
-                ctx.accounts.spl_vault.to_account_info(),
+                ctx.accounts.pool_spl.to_account_info(),
             ],
             &[],
         )?;
-        // Transfer fees to caroline spl vault
+        // Transfer fees to fortune vault
         invoke_signed(
             &system_instruction::transfer(
                 &ctx.accounts.signer.key(),
-                &ctx.accounts.caroline_vault.key(),
-                spl_fee + BURN_COST,
+                &ctx.accounts.fortune_spl.key(),
+                spl_fee + ctx.accounts.state.burn_cost,
             ),
             &[
                 ctx.accounts.signer.to_account_info(),
-                ctx.accounts.caroline_vault.to_account_info(),
+                ctx.accounts.fortune_spl.to_account_info(),
                 ctx.accounts.system_program.to_account_info(),
             ],
             &[],
@@ -142,13 +178,13 @@ pub mod fortune {
         // Sync native
         let ix_2 = sync_native(
             &ctx.accounts.token_program.key(),
-            &ctx.accounts.caroline_vault.key(),
+            &ctx.accounts.fortune_spl.key(),
         )?;
         invoke_signed(
             &ix_2,
             &[
                 ctx.accounts.token_program.to_account_info(),
-                ctx.accounts.caroline_vault.to_account_info(),
+                ctx.accounts.fortune_spl.to_account_info(),
             ],
             &[],
         )?;
@@ -157,15 +193,15 @@ pub mod fortune {
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 anchor_spl::token::Transfer {
-                    from: ctx.accounts.ptoken_vault.to_account_info(),
-                    to: ctx.accounts.user_ptoken_vault.to_account_info(),
-                    authority: ctx.accounts.ptoken_vault.to_account_info(),
+                    from: ctx.accounts.pool_ptoken.to_account_info(),
+                    to: ctx.accounts.user_ptoken.to_account_info(),
+                    authority: ctx.accounts.pool_ptoken.to_account_info(),
                 },
                 &[&[
                     &b"vault"[..],
                     &ctx.accounts.ptoken_mint.key().as_ref(),
                     &ctx.accounts.prob_pool.key().as_ref(),
-                    &[ptoken_vault_bump],
+                    &[pool_token_bump],
                 ]],
             ),
             ptoken_amount,
@@ -463,6 +499,14 @@ pub struct Initialize<'info> {
     pub spl_vault: Box<Account<'info, TokenAccount>>,
     #[account(address = spl_token::native_mint::ID)]
     pub spl_mint: Box<Account<'info, Mint>>,
+    #[account(
+        init,
+        space = 250,
+        payer = signer,
+        seeds = [b"fortune"],
+        bump
+    )]
+    pub state: Box<Account<'info, State>>,
     // System programs + sysvars
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
@@ -470,10 +514,6 @@ pub struct Initialize<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(
-    swap_fee: u64,
-    spl_amount: u64,
-    ptoken_amount: u64)]
 pub struct CreatePool<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
@@ -536,6 +576,11 @@ pub struct CreatePool<'info> {
     pub nft_mint: Box<Account<'info, Mint>>,
     #[account(address = spl_token::native_mint::ID)]
     pub native_mint: Box<Account<'info, Mint>>,
+    #[account(
+        seeds = [b"fortune"],
+        bump
+    )]
+    pub state: Box<Account<'info, State>>,
     // System programs + sysvars
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
@@ -548,18 +593,22 @@ pub struct CreatePool<'info> {
 pub struct Buy<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-    #[account(mut)]
-    pub spl_vault: Box<Account<'info, TokenAccount>>,
+    #[account(
+        mut,
+        seeds = [b"vault", native_mint.key().as_ref(), prob_pool.key().as_ref()],
+        bump
+    )]
+    pub pool_spl: Box<Account<'info, TokenAccount>>,
     #[account(
         mut,
         seeds = [b"vault", ptoken_mint.key().as_ref(), prob_pool.key().as_ref()],
         bump
     )]
-    pub ptoken_vault: Box<Account<'info, TokenAccount>>,
+    pub pool_ptoken: Box<Account<'info, TokenAccount>>,
     #[account(
         mut,
-        constraint = prob_pool.spl_vault == spl_vault.key(),
-        constraint = prob_pool.ptoken_vault == ptoken_vault.key(),
+        constraint = prob_pool.spl_vault == pool_spl.key(),
+        constraint = prob_pool.ptoken_vault == pool_ptoken.key(),
         constraint = prob_pool.ptoken_mint == ptoken_mint.key()
         )]
     pub prob_pool: Box<Account<'info, ProbPool>>,
@@ -568,16 +617,16 @@ pub struct Buy<'info> {
         seeds = [b"vault", native_mint.key().as_ref()],
         bump
     )]
-    pub caroline_vault: Box<Account<'info, TokenAccount>>,
+    pub fortune_spl: Box<Account<'info, TokenAccount>>,
     #[account(
         init_if_needed,
         payer = signer,
         token::mint = ptoken_mint,
-        token::authority = user_ptoken_vault,
+        token::authority = user_ptoken,
         seeds = [b"vault", ptoken_mint.key().as_ref(), prob_pool.key().as_ref(), signer.key().as_ref()],
         bump
     )]
-    pub user_ptoken_vault: Box<Account<'info, TokenAccount>>,
+    pub user_ptoken: Box<Account<'info, TokenAccount>>,
     #[account(
         seeds = ["mint".as_bytes(), prob_pool.key().as_ref()],
         bump,
@@ -585,6 +634,11 @@ pub struct Buy<'info> {
     pub ptoken_mint: Box<Account<'info, Mint>>,
     #[account(address = spl_token::native_mint::ID)]
     pub native_mint: Box<Account<'info, Mint>>,
+    #[account(
+        seeds = [b"fortune"],
+        bump
+    )]
+    pub state: Box<Account<'info, State>>,
     // System programs + sysvars
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
@@ -802,9 +856,21 @@ pub struct ProbPool {
     ptoken_vault: Pubkey,
     ptoken_mint: Pubkey,
     nft_mint: Pubkey,
-    swap_fee: u64,
     claimed: bool,
     spl_supply: u64,
     ptoken_supply: u64,
     outstanding_ptokens: u64,
+}
+
+#[account]
+// Fortune state
+pub struct State {
+    authority: Pubkey,
+    burn_cost: u64,
+    fee_scalar: u64,
+    swap_fee: u64,
+    lamport_init_min: u64,
+    lamport_init_max: u64,
+    ptoken_init_max: u64,
+    ptoken_init_min: u64,
 }

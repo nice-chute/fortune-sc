@@ -17,7 +17,7 @@ describe('fortune', () => {
   const program = anchor.workspace.Fortune as Program<Fortune>;
 
   // Auth
-  const carolineAuth = Keypair.generate();
+  const fortuneAuth = Keypair.generate();
   const creatorAuth = Keypair.generate();
   const buyerAuth = Keypair.generate();
   const mintAuth = Keypair.generate();
@@ -25,12 +25,17 @@ describe('fortune', () => {
   // Params
   const swapFee = new anchor.BN(25);
   const one = new anchor.BN(1);
-  const splAmount = new anchor.BN(100);
-  const ptokenAmount = new anchor.BN(1000);
+  const splAmount = new anchor.BN(10 * LAMPORTS_PER_SOL);
+  const ptokenAmount = new anchor.BN(LAMPORTS_PER_SOL);
   const buyAmount = new anchor.BN(5);
   const burnAmount = new anchor.BN(5);
   const withdrawAmount = new anchor.BN(0);
-
+  const burnCost = new anchor.BN(10000)
+  const feeScalar = new anchor.BN(1000)
+  const splMin = new anchor.BN(LAMPORTS_PER_SOL * .01)
+  const splMax = new anchor.BN(LAMPORTS_PER_SOL * 100000)
+  const ptokenMax = new anchor.BN(LAMPORTS_PER_SOL * 1000000)
+  const ptokenMin = new anchor.BN(1)
 
   // Accounts
   const probPool = Keypair.generate();
@@ -44,20 +49,22 @@ describe('fortune', () => {
   let splVault = null;
   let ptokenVault = null;
   let nftMint = null;
-  let carolineVault = null;
+  let fortuneVault = null;
   let userPtokenVault = null;
   let userBurn = null;
   let userNftVault = null;
+  let state = null;
 
   // Bumps
   let ptokenMintBump = null;
   let nftVaultBump = null;
   let splVaultBump = null;
   let ptokenVaultBump = null;
-  let carolineVaultBump = null;
+  let fortuneVaultBump = null;
   let userPtokenVaultBump = null;
   let userBurnBump = null;
   let userNftVaultBump = null;
+  let stateBump = null;
 
   it('Initialize state', async () => {
     // Airdrop to creator auth
@@ -67,8 +74,8 @@ describe('fortune', () => {
     const mintAuthAirdrop = await provider.connection.requestAirdrop(mintAuth.publicKey, 100 * LAMPORTS_PER_SOL);
     await provider.connection.confirmTransaction(mintAuthAirdrop);
     // Airdrop to caroline auth
-    const carolineAuthAirdrop = await provider.connection.requestAirdrop(carolineAuth.publicKey, 100 * LAMPORTS_PER_SOL);
-    await provider.connection.confirmTransaction(carolineAuthAirdrop);
+    const fortuneAuthAirdrop = await provider.connection.requestAirdrop(fortuneAuth.publicKey, 100 * LAMPORTS_PER_SOL);
+    await provider.connection.confirmTransaction(fortuneAuthAirdrop);
     // Airdrop to buyer auth
     const buyerAuthAirdrop = await provider.connection.requestAirdrop(buyerAuth.publicKey, 100 * LAMPORTS_PER_SOL);
     await provider.connection.confirmTransaction(buyerAuthAirdrop);
@@ -140,7 +147,7 @@ describe('fortune', () => {
       program.programId
     );
     // Caroline SPL vault PDA
-    [carolineVault, carolineVaultBump] = await PublicKey.findProgramAddress(
+    [fortuneVault, fortuneVaultBump] = await PublicKey.findProgramAddress(
       [
         Buffer.from(anchor.utils.bytes.utf8.encode("vault")),
         NATIVE_MINT.toBuffer(),
@@ -166,26 +173,40 @@ describe('fortune', () => {
       ],
       program.programId
     );
+    // State
+    [state, stateBump] = await PublicKey.findProgramAddress(
+      [
+        Buffer.from(anchor.utils.bytes.utf8.encode("fortune")),
+      ],
+      program.programId
+    );
   });
 
   it('Initialize program', async () => {
-    // const tx = await program.rpc.initialize(
-    //   {
-    //     accounts: {
-    //       signer: carolineAuth.publicKey,
-    //       splVault: carolineVault,
-    //       splMint: NATIVE_MINT,
-    //       systemProgram: SystemProgram.programId,
-    //       tokenProgram: TOKEN_PROGRAM_ID,
-    //       rent: SYSVAR_RENT_PUBKEY
-    //     },
-    //     signers: [carolineAuth]
-    //   });
+    const tx = await program.rpc.initialize(
+      swapFee,
+      burnCost,
+      feeScalar,
+      splMin,
+      splMax,
+      ptokenMax,
+      ptokenMin,
+      {
+        accounts: {
+          signer: fortuneAuth.publicKey,
+          splVault: fortuneVault,
+          splMint: NATIVE_MINT,
+          state: state,
+          systemProgram: SystemProgram.programId,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          rent: SYSVAR_RENT_PUBKEY
+        },
+        signers: [fortuneAuth]
+      });
   });
 
   it('Create pool', async () => {
     const tx = await program.rpc.createPool(
-      swapFee,
       splAmount,
       ptokenAmount,
       {
@@ -199,12 +220,25 @@ describe('fortune', () => {
           ptokenVault: ptokenVault,
           nftMint: nftMint.publicKey,
           nativeMint: NATIVE_MINT,
+          state: state,
           systemProgram: SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
           rent: SYSVAR_RENT_PUBKEY
         },
         signers: [creatorAuth, probPool]
       });
+    // Pool initialized correctly
+    let _pool = await program.account.probPool.fetch(probPool.publicKey)
+    assert.ok(_pool.authority.equals(creatorAuth.publicKey))
+    assert.ok(_pool.nftAuthority.equals(creatorAuth.publicKey))
+    assert.ok(_pool.splVault.equals(splVault))
+    assert.ok(_pool.ptokenVault.equals(ptokenVault))
+    assert.ok(_pool.ptokenMint.equals(ptokenMint))
+    assert.ok(_pool.nftMint.equals(nftMint.publicKey))
+    assert.ok(_pool.claimed == false)
+    assert.ok(_pool.splSupply.eq(splAmount))
+    assert.ok(_pool.ptokenSupply.eq(ptokenAmount))
+    assert.ok(_pool.outstandingPtokens.toNumber() == 0)
   });
 
   it('Buy', async () => {
@@ -213,19 +247,37 @@ describe('fortune', () => {
       {
         accounts: {
           signer: buyerAuth.publicKey,
-          splVault: splVault,
-          ptokenVault: ptokenVault,
+          poolSpl: splVault,
+          poolPtoken: ptokenVault,
           probPool: probPool.publicKey,
-          carolineVault: carolineVault,
-          userPtokenVault: userPtokenVault,
+          fortuneSpl: fortuneVault,
+          userPtoken: userPtokenVault,
           ptokenMint: ptokenMint,
           nativeMint: NATIVE_MINT,
+          state: state,
           systemProgram: SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
           rent: SYSVAR_RENT_PUBKEY
         },
         signers: [buyerAuth]
       });
+    // User ptoken vault received tokens
+    let _userBalance = await provider.connection.getTokenAccountBalance(userPtokenVault)
+    assert.ok(_userBalance.value.amount == buyAmount.toString())
+    // Pool ptoken vault sold tokens
+    let _poolBalance = await provider.connection.getTokenAccountBalance(ptokenVault)
+    assert.ok(_poolBalance.value.amount == (ptokenAmount.sub(buyAmount)).toString())
+    // Pool metadata updated
+    let _pool = await program.account.probPool.fetch(probPool.publicKey)
+    assert.ok(_pool.ptokenSupply.eq(ptokenAmount.sub(buyAmount)))
+    assert.ok(_pool.outstandingPtokens.eq(buyAmount))
+    // TODO: SPL amount
+    let _splBalance = await provider.connection.getTokenAccountBalance(splVault)
+    let _poolSpl = await provider.connection.getParsedAccountInfo(splVault)
+    let _fortuneBalance = await provider.connection.getTokenAccountBalance(fortuneVault)
+    console.log(_splBalance)
+    console.log(_poolSpl)
+    console.log(_fortuneBalance)
   });
 
   it('Request Burn', async () => {
@@ -278,7 +330,7 @@ describe('fortune', () => {
       burnAmount,
       {
         accounts: {
-          carolineAuthority: carolineAuth.publicKey,
+          carolineAuthority: fortuneAuth.publicKey,
           user: buyerAuth.publicKey,
           nftVault: nftVault,
           userBurn: userBurn,
@@ -290,7 +342,7 @@ describe('fortune', () => {
           tokenProgram: TOKEN_PROGRAM_ID,
           rent: SYSVAR_RENT_PUBKEY
         },
-        signers: [carolineAuth]
+        signers: [fortuneAuth]
       });
   });
 

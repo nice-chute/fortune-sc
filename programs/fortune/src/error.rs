@@ -20,4 +20,12 @@ pub enum FortuneError {
     ActiveClaim,
     #[msg("Creator cannot claim, close the pool instead")]
     CreatorCannotClaim,
+    #[msg("Lamport init amount too low")]
+    LamportInitMin,
+    #[msg("Lamport init amount too high")]
+    LamportInitMax,
+    #[msg("pToken init amount too low")]
+    PtokenInitMin,
+    #[msg("pToken init amount too high")]
+    PtokenInitMax,
 }
