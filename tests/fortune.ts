@@ -299,10 +299,15 @@ describe('fortune', () => {
         },
         signers: [buyerAuth]
       });
+    // User burn receives ptokens
+    let _burnBalance = await provider.connection.getTokenAccountBalance(userBurn)
+    assert.ok(_burnBalance.value.amount == burnAmount.toString())
+    // User ptoken vault sends ptokens
+    let _vaultBalance = await provider.connection.getTokenAccountBalance(userPtokenVault)
+    assert.ok(_vaultBalance.value.amount == buyAmount.sub(burnAmount).toString())
   });
 
   it('User Withdraw', async () => {
-    // Add your test here.
     const tx = await program.rpc.userWithdraw(
       withdrawAmount,
       {
@@ -318,6 +323,9 @@ describe('fortune', () => {
         },
         signers: [buyerAuth, userPtokenAccount]
       });
+    // pTokens sent to user account
+    let _balance = await provider.connection.getTokenAccountBalance(userPtokenAccount.publicKey)
+    assert.ok(_balance.value.amount == withdrawAmount.toString())
   });
 
   it('Execute Burn', async () => {
@@ -347,6 +355,12 @@ describe('fortune', () => {
         },
         signers: [fortuneAuth]
       });
+    // pTokens burnt
+    let _balance = await provider.connection.getTokenAccountBalance(userBurn)
+    assert.ok(_balance.value.amount == '0')
+    // Outstanding ptokens updated
+    let _pool = await program.account.probPool.fetch(probPool.publicKey);
+    assert.ok(_pool.outstandingPtokens.eq(ptokenAmount.sub(burnAmount)).toString())
   });
 
   it('User claim nft', async () => {

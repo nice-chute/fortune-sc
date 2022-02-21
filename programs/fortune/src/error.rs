@@ -18,8 +18,8 @@ pub enum FortuneError {
     OutstandingProb,
     #[msg("Active claim against pool")]
     ActiveClaim,
-    #[msg("Creator cannot claim, close the pool instead")]
-    CreatorCannotClaim,
+    #[msg("No active claim on this pool")]
+    NoClaim,
     #[msg("Lamport init amount too low")]
     LamportInitMin,
     #[msg("Lamport init amount too high")]

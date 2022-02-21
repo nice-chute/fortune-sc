@@ -71,6 +71,7 @@ pub mod fortune {
         ctx.accounts.prob_pool.nft_mint = ctx.accounts.nft_mint.key();
         // Set pool params
         ctx.accounts.prob_pool.claimed = false;
+        ctx.accounts.prob_pool.to_claim = false;
         ctx.accounts.prob_pool.ptoken_supply = ptoken_amount;
         ctx.accounts.prob_pool.lamport_supply = lamport_amount;
         ctx.accounts.prob_pool.outstanding_ptokens = 0;
@@ -345,9 +346,9 @@ pub mod fortune {
         if rng >= (ctx.accounts.prob_pool.ptoken_supply - burn_amount) {
             // Transfer nft to user
             ctx.accounts.prob_pool.nft_authority = ctx.accounts.user.key();
+            ctx.accounts.prob_pool.to_claim = true;
         }
         // Update prob pool data
-        ctx.accounts.prob_pool.claimed = true;
         ctx.accounts.prob_pool.outstanding_ptokens -= burn_amount;
         Ok(())
     }
@@ -358,8 +359,8 @@ pub mod fortune {
         let nft_vault_bump = *ctx.bumps.get("nft_vault").unwrap();
         // Creator cannot claim
         require!(
-            ctx.accounts.signer.key() != ctx.accounts.prob_pool.authority,
-            error::FortuneError::CreatorCannotClaim
+            ctx.accounts.prob_pool.to_claim == true,
+            error::FortuneError::NoClaim
         );
         // Transfer nft to claimer
         token::transfer(
@@ -381,6 +382,7 @@ pub mod fortune {
         )?;
         // Close pool
         ctx.accounts.prob_pool.claimed = true;
+        ctx.accounts.prob_pool.to_claim = false;
         Ok(())
     }
 
@@ -388,7 +390,7 @@ pub mod fortune {
     pub fn close_pool(ctx: Context<ClosePool>) -> ProgramResult {
         // Bumps
         let nft_vault_bump = *ctx.bumps.get("nft_vault").unwrap();
-        let spl_vault_bump = *ctx.bumps.get("pool_lamport_vault").unwrap();
+        let lamport_vault_bump = *ctx.bumps.get("pool_lamport_vault").unwrap();
         let ptoken_vault_bump = *ctx.bumps.get("pool_ptoken_vault").unwrap();
 
         // No outstanding ptokens
@@ -396,15 +398,13 @@ pub mod fortune {
             ctx.accounts.prob_pool.outstanding_ptokens == 0,
             error::FortuneError::OutstandingProb
         );
-        // Active claim outstanding. Todo: remove this from close critical path
-        if ctx.accounts.prob_pool.nft_authority != ctx.accounts.prob_pool.authority {
-            require!(
-                ctx.accounts.prob_pool.claimed == true,
-                error::FortuneError::ActiveClaim
-            )
-        }
-        // Nft was not won
-        else {
+        // No active claim outstanding. Todo: remove this from close critical path
+        require!(
+            ctx.accounts.prob_pool.to_claim == false,
+            error::FortuneError::ActiveClaim
+        );
+        // NFT was never won
+        if ctx.accounts.prob_pool.claimed == false {
             // Transfer NFT back to creator
             token::transfer(
                 CpiContext::new_with_signer(
@@ -424,7 +424,7 @@ pub mod fortune {
                 1,
             )?;
         }
-        // Transfer pool spl funds to pool authority
+        // Transfer pool lamport funds to recipient
         token::transfer(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -437,7 +437,7 @@ pub mod fortune {
                     &b"vault"[..],
                     &ctx.accounts.native_mint.key().as_ref(),
                     &ctx.accounts.prob_pool.key().as_ref(),
-                    &[spl_vault_bump],
+                    &[lamport_vault_bump],
                 ]],
             ),
             ctx.accounts.pool_lamport_vault.amount,
@@ -475,7 +475,7 @@ pub mod fortune {
                 &[ptoken_vault_bump],
             ]],
         ))?;
-        // Close pool spl vault
+        // Close pool lamport vault
         token::close_account(CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             anchor_spl::token::CloseAccount {
@@ -487,7 +487,7 @@ pub mod fortune {
                 &b"vault"[..],
                 &ctx.accounts.native_mint.key().as_ref(),
                 &ctx.accounts.prob_pool.key().as_ref(),
-                &[spl_vault_bump],
+                &[lamport_vault_bump],
             ]],
         ))?;
         // Close pool nft vault
@@ -897,6 +897,7 @@ pub struct ProbPool {
     ptoken_mint: Pubkey,
     nft_mint: Pubkey,
     claimed: bool,
+    to_claim: bool,
     lamport_supply: u64,
     ptoken_supply: u64,
     outstanding_ptokens: u64,
