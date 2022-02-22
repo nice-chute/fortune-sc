@@ -378,6 +378,15 @@ describe('fortune', () => {
         },
         signers: [buyerAuth, buyerNftAccount]
       });
+    // Buyer gets nft
+    let _balance = await provider.connection.getTokenAccountBalance(buyerNftAccount.publicKey)
+    assert.ok(_balance.value.amount == '1')
+    // NFT vault emptied
+    let _nftBalance = await provider.connection.getTokenAccountBalance(nftVault)
+    assert.ok(_nftBalance.value.amount == '0')
+    // Pool updated
+    let _pool = await program.account.probPool.fetch(probPool.publicKey)
+    assert.ok(_pool.claimed == true)
   });
 
   it('Close pool', async () => {
@@ -400,5 +409,12 @@ describe('fortune', () => {
         },
         signers: [creatorAuth, creatorSplAccount, creatorNftAccount]
       });
+    try {
+      let _acc = await program.account.probPool.fetch(probPool.publicKey)
+      assert.ok(false)
+    }
+    catch {
+      assert.ok(true)
+    }
   });
 });
