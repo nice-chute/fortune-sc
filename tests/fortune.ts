@@ -3,7 +3,7 @@ import { Program, BN } from '@project-serum/anchor';
 import { Fortune } from '../target/types/fortune';
 import {
   PublicKey, Keypair, SystemProgram, Transaction, TransactionInstruction, LAMPORTS_PER_SOL,
-  SYSVAR_RECENT_BLOCKHASHES_PUBKEY,
+  SYSVAR_RECENT_BLOCKHASHES_PUBKEY, SYSVAR_SLOT_HASHES_PUBKEY,
   SYSVAR_RENT_PUBKEY
 } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID, Token, NATIVE_MINT, ASSOCIATED_TOKEN_PROGRAM_ID } from "@solana/spl-token";
@@ -26,16 +26,20 @@ describe('fortune', () => {
   const swapFee = new anchor.BN(25);
   const one = new anchor.BN(1);
   const splAmount = new anchor.BN(10 * LAMPORTS_PER_SOL);
-  const ptokenAmount = new anchor.BN(LAMPORTS_PER_SOL);
-  const buyAmount = new anchor.BN(5);
-  const burnAmount = new anchor.BN(5);
+  const ptokenAmount = new anchor.BN(10);
+  const buyAmount = new anchor.BN(4);
+  const burnAmount = new anchor.BN(4);
   const withdrawAmount = new anchor.BN(0);
   const burnCost = new anchor.BN(10000)
   const feeScalar = new anchor.BN(1000)
   const splMin = new anchor.BN(LAMPORTS_PER_SOL * .01)
   const splMax = new anchor.BN(LAMPORTS_PER_SOL * 100000)
   const ptokenMax = new anchor.BN(LAMPORTS_PER_SOL * 1000000)
-  const ptokenMin = new anchor.BN(1)
+  const ptokenMin = new anchor.BN(2)
+
+  // Testing
+  let spl_cost = null;
+  let spl_fee = null;
 
   // Accounts
   const probPool = Keypair.generate();
@@ -159,7 +163,6 @@ describe('fortune', () => {
       [
         Buffer.from(anchor.utils.bytes.utf8.encode("vault")),
         ptokenMint.toBuffer(),
-        probPool.publicKey.toBuffer(),
         buyerAuth.publicKey.toBuffer()
       ],
       program.programId
@@ -183,26 +186,26 @@ describe('fortune', () => {
   });
 
   it('Initialize program', async () => {
-    // const tx = await program.rpc.initialize(
-    //   swapFee,
-    //   burnCost,
-    //   feeScalar,
-    //   splMin,
-    //   splMax,
-    //   ptokenMax,
-    //   ptokenMin,
-    //   {
-    //     accounts: {
-    //       signer: fortuneAuth.publicKey,
-    //       splVault: fortuneVault,
-    //       splMint: NATIVE_MINT,
-    //       state: state,
-    //       systemProgram: SystemProgram.programId,
-    //       tokenProgram: TOKEN_PROGRAM_ID,
-    //       rent: SYSVAR_RENT_PUBKEY
-    //     },
-    //     signers: [fortuneAuth]
-    //   });
+    const tx = await program.rpc.initialize(
+      swapFee,
+      burnCost,
+      feeScalar,
+      splMin,
+      splMax,
+      ptokenMax,
+      ptokenMin,
+      {
+        accounts: {
+          signer: fortuneAuth.publicKey,
+          splVault: fortuneVault,
+          splMint: NATIVE_MINT,
+          state: state,
+          systemProgram: SystemProgram.programId,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          rent: SYSVAR_RENT_PUBKEY
+        },
+        signers: [fortuneAuth]
+      });
   });
 
   it('Create pool', async () => {
@@ -239,6 +242,12 @@ describe('fortune', () => {
     assert.ok(_pool.lamportSupply.eq(splAmount))
     assert.ok(_pool.ptokenSupply.eq(ptokenAmount))
     assert.ok(_pool.outstandingPtokens.toNumber() == 0)
+    // Set vars for buy testing
+    let k = _pool.ptokenSupply.mul(_pool.lamportSupply)
+    let new_lamport_supply = k.div(_pool.ptokenSupply.sub(buyAmount))
+    spl_cost = new_lamport_supply.sub(_pool.lamportSupply)
+    spl_fee = ((spl_cost.mul(swapFee)).div(feeScalar))
+
   });
 
   it('Buy', async () => {
@@ -271,13 +280,9 @@ describe('fortune', () => {
     let _pool = await program.account.probPool.fetch(probPool.publicKey)
     assert.ok(_pool.ptokenSupply.eq(ptokenAmount.sub(buyAmount)))
     assert.ok(_pool.outstandingPtokens.eq(buyAmount))
-    // TODO: SPL amount
+    // Sol sent to pool vault
     let _splBalance = await provider.connection.getTokenAccountBalance(splVault)
-    let _poolSpl = await provider.connection.getParsedAccountInfo(splVault)
-    let _fortuneBalance = await provider.connection.getTokenAccountBalance(fortuneVault)
-    console.log(_splBalance)
-    console.log(_poolSpl)
-    console.log(_fortuneBalance)
+    assert.ok(_splBalance.value.amount == spl_cost.toString())
   });
 
   it('Request Burn', async () => {
@@ -313,10 +318,9 @@ describe('fortune', () => {
       {
         accounts: {
           signer: buyerAuth.publicKey,
-          userVault: userPtokenVault,
+          userPtokenVault: userPtokenVault,
           userAccount: userPtokenAccount.publicKey,
-          probPool: probPool.publicKey,
-          vaultMint: ptokenMint,
+          ptokenMint: ptokenMint,
           systemProgram: SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
           rent: SYSVAR_RENT_PUBKEY
@@ -349,6 +353,7 @@ describe('fortune', () => {
           nftMint: nftMint.publicKey,
           ptokenMint: ptokenMint,
           state: state,
+          slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
           systemProgram: SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
           rent: SYSVAR_RENT_PUBKEY

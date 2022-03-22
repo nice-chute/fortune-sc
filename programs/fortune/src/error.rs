@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-#[error]
+#[error_code]
 pub enum FortuneError {
     #[msg("Bid is too low")]
     BidTooLow,
@@ -28,4 +28,6 @@ pub enum FortuneError {
     PtokenInitMin,
     #[msg("pToken init amount too high")]
     PtokenInitMax,
+    #[msg("No more pTokens left to buy")]
+    SoldOut,
 }

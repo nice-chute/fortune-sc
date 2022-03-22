@@ -1,7 +1,9 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token;
 use anchor_spl::token::{Mint, Token, TokenAccount};
+use arrayref::array_ref;
 use solana_program::program::invoke_signed;
+use solana_program::sysvar::SysvarId;
 use solana_program::{system_instruction, sysvar};
 use spl_token::instruction::sync_native;
 
@@ -12,6 +14,7 @@ mod random;
 
 #[program]
 pub mod fortune {
+
     use super::*;
 
     // Create program vaults
@@ -24,7 +27,7 @@ pub mod fortune {
         lamport_max: u64,
         ptoken_max: u64,
         ptoken_min: u64,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         // Set state
         let state = &mut ctx.accounts.state;
         state.burn_cost = burn_cost;
@@ -43,7 +46,7 @@ pub mod fortune {
         ctx: Context<CreatePool>,
         lamport_amount: u64,
         ptoken_amount: u64,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         require!(
             lamport_amount >= ctx.accounts.state.lamport_init_min,
             error::FortuneError::LamportInitMin
@@ -105,7 +108,7 @@ pub mod fortune {
                     to: ctx.accounts.nft_vault.to_account_info(),
                     authority: ctx.accounts.signer.to_account_info(),
                 },
-                &[&[]],
+                &[],
             ),
             1,
         )?;
@@ -113,11 +116,15 @@ pub mod fortune {
     }
 
     // Swap SPL for ptokens
-    pub fn buy(ctx: Context<Buy>, ptoken_amount: u64) -> ProgramResult {
+    pub fn buy(ctx: Context<Buy>, ptoken_amount: u64) -> Result<()> {
         // Prob pool is active
         require!(
             ctx.accounts.prob_pool.claimed == false,
             error::FortuneError::PoolClosed
+        );
+        require!(
+            ctx.accounts.prob_pool.ptoken_supply > 1,
+            error::FortuneError::SoldOut
         );
         msg!("swap_fee: {:?}", ctx.accounts.state.swap_fee);
         msg!("scalar: {:?}", ctx.accounts.state.fee_scalar);
@@ -211,11 +218,10 @@ pub mod fortune {
         ctx.accounts.prob_pool.ptoken_supply = new_ptoken_supply;
         ctx.accounts.prob_pool.lamport_supply = new_spl_supply;
         ctx.accounts.prob_pool.outstanding_ptokens += ptoken_amount;
-        // TODO: RNG might change here?
         Ok(())
     }
 
-    pub fn request_burn(ctx: Context<RequestBurn>, ptoken_amount: u64) -> ProgramResult {
+    pub fn request_burn(ctx: Context<RequestBurn>, ptoken_amount: u64) -> Result<()> {
         // Bump
         let user_ptoken_vault_bump = *ctx.bumps.get("user_ptoken_vault").unwrap();
         // Transfer from user vault to user burn
@@ -230,7 +236,6 @@ pub mod fortune {
                 &[&[
                     &b"vault"[..],
                     &ctx.accounts.ptoken_mint.key().as_ref(),
-                    &ctx.accounts.prob_pool.key().as_ref(),
                     &ctx.accounts.signer.key().as_ref(),
                     &[user_ptoken_vault_bump],
                 ]],
@@ -267,51 +272,49 @@ pub mod fortune {
         Ok(())
     }
 
-    pub fn user_withdraw(ctx: Context<UserWithdraw>, token_amount: u64) -> ProgramResult {
+    pub fn user_withdraw(ctx: Context<UserWithdraw>, token_amount: u64) -> Result<()> {
         // Bump
-        let vault_bump = *ctx.bumps.get("user_vault").unwrap();
+        let vault_bump = *ctx.bumps.get("user_ptoken_vault").unwrap();
         // Transfer from user vault to user account
         token::transfer(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 anchor_spl::token::Transfer {
-                    from: ctx.accounts.user_vault.to_account_info(),
+                    from: ctx.accounts.user_ptoken_vault.to_account_info(),
                     to: ctx.accounts.user_account.to_account_info(),
-                    authority: ctx.accounts.user_vault.to_account_info(),
+                    authority: ctx.accounts.user_ptoken_vault.to_account_info(),
                 },
                 &[&[
                     &b"vault"[..],
-                    &ctx.accounts.vault_mint.key().as_ref(),
-                    &ctx.accounts.prob_pool.key().as_ref(),
+                    &ctx.accounts.ptoken_mint.key().as_ref(),
                     &ctx.accounts.signer.key().as_ref(),
                     &[vault_bump],
                 ]],
             ),
             token_amount,
         )?;
-        // Close empty accounts
-        if ctx.accounts.user_vault.amount == 0 {
-            token::close_account(CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                anchor_spl::token::CloseAccount {
-                    account: ctx.accounts.user_vault.to_account_info(),
-                    destination: ctx.accounts.signer.to_account_info(),
-                    authority: ctx.accounts.user_vault.to_account_info(),
-                },
-                &[&[
-                    &b"vault"[..],
-                    &ctx.accounts.vault_mint.key().as_ref(),
-                    &ctx.accounts.prob_pool.key().as_ref(),
-                    &ctx.accounts.signer.key().as_ref(),
-                    &[vault_bump],
-                ]],
-            ))?;
-        }
+        // // Close empty accounts
+        // if ctx.accounts.user_ptoken_vault.amount == 0 {
+        //     token::close_account(CpiContext::new_with_signer(
+        //         ctx.accounts.token_program.to_account_info(),
+        //         anchor_spl::token::CloseAccount {
+        //             account: ctx.accounts.user_ptoken_vault.to_account_info(),
+        //             destination: ctx.accounts.signer.to_account_info(),
+        //             authority: ctx.accounts.user_ptoken_vault.to_account_info(),
+        //         },
+        //         &[&[
+        //             &b"vault"[..],
+        //             &ctx.accounts.vault_mint.key().as_ref(),
+        //             &ctx.accounts.signer.key().as_ref(),
+        //             &[vault_bump],
+        //         ]],
+        //     ))?;
+        // }
         Ok(())
     }
 
     // Burn ptokens in order to try to win the asset
-    pub fn execute_burn(ctx: Context<ExecuteBurn>, burn_amount: u64) -> ProgramResult {
+    pub fn execute_burn(ctx: Context<ExecuteBurn>, burn_amount: u64) -> Result<()> {
         // Bump
         let user_burn_bump = *ctx.bumps.get("user_burn").unwrap();
         // Burn ptokens in user burn
@@ -333,14 +336,19 @@ pub mod fortune {
             burn_amount,
         )?;
 
-        // // Randomness from blockhash
-        // let randomness = random::last_blockhash_accessor(&ctx.accounts.recent_blockhashes)?;
-        // // X = number between 1 and ptoken supply. Generated using the user pubkey
-        // let mut rng: u64 =
-        //     random::expand_with_pubkey(randomness, ctx.accounts.user.key().to_bytes())
-        //         % ctx.accounts.prob_pool.ptoken_supply;
+        let data = ctx.accounts.slot_hashes.try_borrow_data()?;
+        let most_recent = array_ref![data, 8 + 8, 8];
 
-        let rng = ctx.accounts.prob_pool.ptoken_supply; // REMOVE: TESTING ONLY
+        let mut rng = u64::from_le_bytes(*most_recent);
+        rng = rng % ctx.accounts.prob_pool.ptoken_supply;
+
+        msg!("rng: {:?}", rng);
+        msg!(
+            "ptoken burn: {:?}",
+            ctx.accounts.prob_pool.ptoken_supply - burn_amount
+        );
+
+        // rng = ctx.accounts.prob_pool.ptoken_supply; // REMOVE: TESTING ONLY
 
         // P(win) = P(X < burn_amount) = 1-P(X >= burn_amount)
         if rng >= (ctx.accounts.prob_pool.ptoken_supply - burn_amount) {
@@ -354,7 +362,7 @@ pub mod fortune {
     }
 
     // Claim underlying asset
-    pub fn claim_asset(ctx: Context<ClaimAsset>) -> ProgramResult {
+    pub fn claim_asset(ctx: Context<ClaimAsset>) -> Result<()> {
         // Bump
         let nft_vault_bump = *ctx.bumps.get("nft_vault").unwrap();
         // Creator cannot claim
@@ -387,7 +395,7 @@ pub mod fortune {
     }
 
     // Close a probability pool, requires no outstanding ptokens
-    pub fn close_pool(ctx: Context<ClosePool>) -> ProgramResult {
+    pub fn close_pool(ctx: Context<ClosePool>) -> Result<()> {
         // Bumps
         let nft_vault_bump = *ctx.bumps.get("nft_vault").unwrap();
         let lamport_vault_bump = *ctx.bumps.get("pool_lamport_vault").unwrap();
@@ -509,12 +517,21 @@ pub mod fortune {
     }
 }
 
+/*
+- signer: Any, becomes the authority of the program
+- spl_vault: Initial program vault for SOL
+- spl_mint: Native mint
+- state: State
+- system_program: System
+- token_program: Token
+- rent: Rent
+*/
 #[derive(Accounts)]
 pub struct Initialize<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
     #[account(
-        init,
+        init_if_needed,
         payer = signer,
         token::mint = spl_mint,
         token::authority = spl_vault,
@@ -525,7 +542,7 @@ pub struct Initialize<'info> {
     #[account(address = spl_token::native_mint::ID)]
     pub spl_mint: Box<Account<'info, Mint>>,
     #[account(
-        init,
+        init_if_needed,
         space = 250,
         payer = signer,
         seeds = [b"fortune"],
@@ -538,6 +555,21 @@ pub struct Initialize<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
+/*
+- signer: Any
+- nft_account: TokenAccount with NFT
+- prob_pool: ProbPool
+- ptoken_mint: Mint for ProbPool
+- nft_vault: Pool vault for NFT
+- lamport_vault: Pool vault for lamports
+- ptoken_vault: Pool vault for ptokens
+- nft_mint: Mint for NFT stored in the pool
+- native_mint: NATIVE_MINT
+- state: State
+- system_program: System
+- token_program: Token
+- rent: Rent
+*/
 #[derive(Accounts)]
 pub struct CreatePool<'info> {
     #[account(mut)]
@@ -560,7 +592,7 @@ pub struct CreatePool<'info> {
     #[account(
         init,
         payer = signer,
-        seeds = ["mint".as_bytes(),prob_pool.key().as_ref()],
+        seeds = ["mint".as_bytes(), prob_pool.key().as_ref()],
         bump,
         mint::decimals = 0,
         mint::authority = ptoken_mint
@@ -612,13 +644,29 @@ pub struct CreatePool<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
+/*
+- signer: Any
+- pool_lamport_vault: Pool's lamport vault
+- pool_ptoken_vault: Pool's ptoken vault
+- prob_pool: Probability pool to buy from
+- fortune_lamport_vault: Protocol's lamport vault
+- user_ptoken_vault: Buyer's ptoken vault with protocol
+- ptoken_mint: Ptoken mint for prob pool
+- native_mint: NATIVE_MINT
+- state: State
+- system_program: System
+- token_program: Token
+- rent: Rent
+*/
 #[derive(Accounts)]
-#[instruction(
-    ptoken_amount: u64)]
 pub struct Buy<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"vault", native_mint.key().as_ref(), prob_pool.key().as_ref()],
+        bump
+    )]
     pub pool_lamport_vault: Box<Account<'info, TokenAccount>>,
     #[account(
         mut,
@@ -644,7 +692,7 @@ pub struct Buy<'info> {
         payer = signer,
         token::mint = ptoken_mint,
         token::authority = user_ptoken_vault,
-        seeds = [b"vault", ptoken_mint.key().as_ref(), prob_pool.key().as_ref(), signer.key().as_ref()],
+        seeds = [b"vault", ptoken_mint.key().as_ref(), signer.key().as_ref()],
         bump
     )]
     pub user_ptoken_vault: Box<Account<'info, TokenAccount>>,
@@ -666,9 +714,20 @@ pub struct Buy<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
+/*
+- signer: Must be the owner of the ptoken vault to burn from
+- fortune_lamport_vault: Protocol SOL vault
+- user_ptoken_vault: Signer's ptoken vault
+- user_burn: Signer's ptoken burn vault (tokens ready to burn once here)
+- prob_pool: Probability pool to burn tokens for
+- ptoken_mint: Ptoken mint for the probability pool
+- state: State
+- native_mint: NATIVE MINT
+- system_program: System
+- token_program: Token
+- rent: Rent
+ */
 #[derive(Accounts)]
-#[instruction(
-    ptoken_amount: u64)]
 pub struct RequestBurn<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
@@ -680,7 +739,7 @@ pub struct RequestBurn<'info> {
     pub fortune_lamport_vault: Box<Account<'info, TokenAccount>>,
     #[account(
         mut,
-        seeds = [b"vault", ptoken_mint.key().as_ref(), prob_pool.key().as_ref(), signer.key().as_ref()],
+        seeds = [b"vault", ptoken_mint.key().as_ref(), signer.key().as_ref()],
         bump
     )]
     pub user_ptoken_vault: Box<Account<'info, TokenAccount>>,
@@ -716,44 +775,61 @@ pub struct RequestBurn<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
+/*
+- signer: Owner of user ptoken account
+- user_ptoken_vault: User PDA ptoken vault
+- user_account: User ptoken account
+- ptoken_mint: Ptoken mint account for withdraw
+- system_program: System
+- token_program: Token
+- rent: Rent
+*/
 #[derive(Accounts)]
-#[instruction(
-    token_amount: u64)]
 pub struct UserWithdraw<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
     #[account(
         mut,
-        seeds = [b"vault", vault_mint.key().as_ref(), prob_pool.key().as_ref(), signer.key().as_ref()],
+        seeds = [b"vault", ptoken_mint.key().as_ref(), signer.key().as_ref()],
         bump
     )]
-    pub user_vault: Box<Account<'info, TokenAccount>>,
+    pub user_ptoken_vault: Box<Account<'info, TokenAccount>>,
     #[account(
         init_if_needed,
         payer = signer,
-        token::mint = vault_mint,
+        token::mint = ptoken_mint,
         token::authority = signer,
     )]
     pub user_account: Box<Account<'info, TokenAccount>>,
-    #[account(mut)]
-    pub prob_pool: Box<Account<'info, ProbPool>>,
     #[account()]
-    pub vault_mint: Box<Account<'info, Mint>>,
+    pub ptoken_mint: Box<Account<'info, Mint>>,
     // System programs + sysvars
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
     pub rent: Sysvar<'info, Rent>,
 }
 
+/*
+- fortune_authority: Authority on Fortune, permissioned call for now
+- user: Pubkey of user we are doing the burn on behalf
+- nft_vault: NFT prize vault for probability pool
+- user_burn: User's burn account
+- prob_pool: Probability pool
+- nft_mint: Mint for the prize
+- ptoken_mint: Ptoken mint in the user burn
+- state: State
+- system_program: System
+- token_program: Token
+- rent: Rent
+*/
 #[derive(Accounts)]
-#[instruction(
-    burn_amount: u64)]
 pub struct ExecuteBurn<'info> {
     #[account(
         mut,
-        //TODO constraint = fortune_authority.key() == state.authority
+        constraint = fortune_authority.key() == state.authority
     )]
     pub fortune_authority: Signer<'info>,
+    /// CHECK: This function is only runnable by Fortune admin for now
     #[account(mut)]
     pub user: UncheckedAccount<'info>,
     // Vault for nft
@@ -787,14 +863,28 @@ pub struct ExecuteBurn<'info> {
         bump
     )]
     pub state: Box<Account<'info, State>>,
+    /// CHECK: Constraint
+    #[account(
+        constraint = slot_hashes.key() == sysvar::slot_hashes::SlotHashes::id()
+    )]
+    pub slot_hashes: UncheckedAccount<'info>,
     // System programs + sysvars
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
     pub rent: Sysvar<'info, Rent>,
 }
 
+/*
+- signer: Must be nft_authority of probability pool
+- nft_account: NFT account to transfer prize to
+- prob_pool: Probability pool
+- nft_vault: NFT protocol vault
+- nft_mint: Prize mint
+- system_program: System
+- token_program: Token
+- rent: Rent
+*/
 #[derive(Accounts)]
-#[instruction()]
 pub struct ClaimAsset<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
@@ -824,8 +914,22 @@ pub struct ClaimAsset<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
+/*
+- signer: Owner of the pool
+- recipient: SOL account to give proceeds to
+- nft_account: NFT account to give prize back to (if needed)
+- prob_pool: Probability pool
+- ptoken_mint: Ptoken mint for pool
+- nft_vault: NFT protocol prize vault
+- pool_lamport_vault: Pools lamport vault for AMM
+- pool_ptoken_vault: Pools ptoken vault for AMM
+- nft_mint: Mint of prize
+- native_mint: Sol
+- system_program: System
+- token_program: Token
+- rent: Rent
+*/
 #[derive(Accounts)]
-#[instruction()]
 pub struct ClosePool<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
